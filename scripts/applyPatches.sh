@@ -62,6 +62,6 @@ fi
 
 
 # Apply patches
-applyPatch Velocity ElytraProxy-Build HEAD
+applyPatch Velocity ElytraProxy-Build master
 
 enableCommitSigningIfNeeded
