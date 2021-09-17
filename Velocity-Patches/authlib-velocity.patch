@@ -1,0 +1,97 @@
+diff --git a/proxy/build.gradle b/proxy/build.gradle
+index 33fa5bb4..ded9871b 100644
+--- a/proxy/build.gradle
++++ b/proxy/build.gradle
+@@ -58,6 +58,7 @@ dependencies {
+     implementation "io.netty:netty-transport-native-epoll:${nettyVersion}"
+     implementation "io.netty:netty-transport-native-epoll:${nettyVersion}:linux-x86_64"
+     implementation "io.netty:netty-transport-native-epoll:${nettyVersion}:linux-aarch_64"
++    implementation group: 'com.mojang', name: 'authlib', version: '1.5.25'
+ 
+     implementation "org.apache.logging.log4j:log4j-api:${log4jVersion}"
+     implementation "org.apache.logging.log4j:log4j-core:${log4jVersion}"
+diff --git a/proxy/src/main/java/com/velocitypowered/proxy/AuthServiceSingleton.java b/proxy/src/main/java/com/velocitypowered/proxy/AuthServiceSingleton.java
+new file mode 100644
+index 00000000..bcec53c1
+--- /dev/null
++++ b/proxy/src/main/java/com/velocitypowered/proxy/AuthServiceSingleton.java
+@@ -0,0 +1,27 @@
++package com.velocitypowered.proxy;
++
++import com.google.common.collect.Lists;
++import com.mojang.authlib.minecraft.MinecraftSessionService;
++import com.mojang.authlib.yggdrasil.YggdrasilAuthenticationService;
++import com.velocitypowered.api.util.GameProfile;
++
++import java.net.Proxy;
++import java.util.List;
++import java.util.UUID;
++
++public class AuthServiceSingleton {
++    public static YggdrasilAuthenticationService authService = new YggdrasilAuthenticationService(Proxy.NO_PROXY, UUID.randomUUID().toString());
++    public static MinecraftSessionService sessionService = authService.createMinecraftSessionService();
++
++    public static GameProfile authLibToVelocityProfiles(com.mojang.authlib.GameProfile input) {
++
++        List<GameProfile.Property> result = Lists.newArrayList();
++        input.getProperties().forEach((key, property) -> {
++            result.add(new GameProfile.Property(property.getName(), property.getValue(), property.getSignature()));
++        });
++        GameProfile velocityGameProfile = new GameProfile(input.getId().toString().replaceAll("-", ""), input.getName(), result);
++        System.out.println(velocityGameProfile.toString());
++        return velocityGameProfile;
++    }
++
++}
+\ No newline at end of file
+diff --git a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/LoginSessionHandler.java b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/LoginSessionHandler.java
+index c1967e85..d3668491 100644
+--- a/proxy/src/main/java/com/velocitypowered/proxy/connection/client/LoginSessionHandler.java
++++ b/proxy/src/main/java/com/velocitypowered/proxy/connection/client/LoginSessionHandler.java
+@@ -19,12 +19,14 @@ package com.velocitypowered.proxy.connection.client;
+ 
+ import static com.google.common.net.UrlEscapers.urlFormParameterEscaper;
+ import static com.velocitypowered.api.network.ProtocolVersion.MINECRAFT_1_8;
++import static com.velocitypowered.proxy.AuthServiceSingleton.authLibToVelocityProfiles;
+ import static com.velocitypowered.proxy.VelocityServer.GENERAL_GSON;
+ import static com.velocitypowered.proxy.connection.VelocityConstants.EMPTY_BYTE_ARRAY;
+ import static com.velocitypowered.proxy.util.EncryptionUtils.decryptRsa;
+ import static com.velocitypowered.proxy.util.EncryptionUtils.generateServerId;
+ 
+ import com.google.common.base.Preconditions;
++import com.mojang.authlib.exceptions.AuthenticationUnavailableException;
+ import com.velocitypowered.api.event.connection.DisconnectEvent;
+ import com.velocitypowered.api.event.connection.DisconnectEvent.LoginStatus;
+ import com.velocitypowered.api.event.connection.LoginEvent;
+@@ -38,6 +40,7 @@ import com.velocitypowered.api.permission.PermissionFunction;
+ import com.velocitypowered.api.proxy.server.RegisteredServer;
+ import com.velocitypowered.api.util.GameProfile;
+ import com.velocitypowered.api.util.UuidUtils;
++import com.velocitypowered.proxy.AuthServiceSingleton;
+ import com.velocitypowered.proxy.VelocityServer;
+ import com.velocitypowered.proxy.config.PlayerInfoForwarding;
+ import com.velocitypowered.proxy.config.VelocityConfiguration;
+@@ -142,10 +145,11 @@ public class LoginSessionHandler implements MinecraftSessionHandler {
+ 
+         try {
+           Response profileResponse = hasJoinedResponse.get();
+-          if (profileResponse.getStatusCode() == 200) {
++          com.mojang.authlib.GameProfile candidateProfile = AuthServiceSingleton.sessionService.hasJoinedServer(
++                  new com.mojang.authlib.GameProfile(UuidUtils.generateOfflinePlayerUuid(login.getUsername()), login.getUsername()), serverId, null);
++          if (candidateProfile != null) {
+             // All went well, initialize the session.
+-            initializePlayer(GENERAL_GSON.fromJson(profileResponse.getResponseBody(),
+-                GameProfile.class), true);
++            initializePlayer(authLibToVelocityProfiles(candidateProfile), true);
+           } else if (profileResponse.getStatusCode() == 204) {
+             // Apparently an offline-mode user logged onto this online-mode proxy.
+             inbound.disconnect(server.getConfiguration().getMessages().getOnlineModeOnly());
+@@ -162,6 +166,8 @@ public class LoginSessionHandler implements MinecraftSessionHandler {
+         } catch (InterruptedException e) {
+           // not much we can do usefully
+           Thread.currentThread().interrupt();
++        } catch (AuthenticationUnavailableException e) {
++          inbound.disconnect(server.getConfiguration().getMessages().getOnlineModeOnly());
+         }
+       }, mcConnection.eventLoop());
+     } catch (GeneralSecurityException e) {
